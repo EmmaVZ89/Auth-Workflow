@@ -1,9 +1,9 @@
 const User = require("../models/User");
+const Token = require("../models/Token");
 const { StatusCodes } = require("http-status-codes");
 const CustomError = require("../errors");
-const { attachCookiesToResponse, createTokenUser } = require("../utils");
+const { attachCookiesToResponse, createTokenUser, sendVerificationEmail } = require("../utils");
 const crypto = require("crypto");
-const sendEmail = require("../utils/sendEmail");
 
 const register = async (req, res) => {
   const { email, name, password } = req.body;
@@ -22,9 +22,20 @@ const register = async (req, res) => {
 
   const user = await User.create({ name, email, password, role, verificationToken });
 
-  // send email
-  await sendEmail();
-  
+  // send verification email
+  const origin = "http://localhost:3000";
+  // const protocol = req.protocol;
+  // const host = req.get("host");
+  // const forwardedHost = req.get("x-forwarded-host");
+  // const forwardedProtocol = req.get("x-forwarded-proto");
+
+  await sendVerificationEmail({
+    name: user.name,
+    email: user.email,
+    verificationToken: user.verificationToken,
+    origin,
+  });
+
   // send verification token back only while testing in postman!
   res.status(StatusCodes.CREATED).json({
     msg: "Success! Please check yout email to verify account",
@@ -71,7 +82,29 @@ const login = async (req, res) => {
   }
 
   const tokenUser = createTokenUser(user);
-  attachCookiesToResponse({ res, user: tokenUser });
+
+  // create refresh token
+  let refreshToken = "";
+  // check for existing token
+  const existingToken = await Token.findOne({ user: user._id });
+  if (existingToken) {
+    const { isValid } = existingToken;
+    if (!isValid) {
+      throw new CustomError.UnauthenticatedError("Invalid Credentials");
+    }
+    refreshToken = existingToken.refreshToken;
+    attachCookiesToResponse({ res, user: tokenUser, refreshToken });
+    res.status(StatusCodes.OK).json({ user: tokenUser });
+    return;
+  }
+  refreshToken = crypto.randomBytes(40).toString("hex");
+  const userAgent = req.headers["user-agent"];
+  const ip = req.ip;
+  const userToken = { refreshToken, ip, userAgent, user: user._id };
+
+  await Token.create(userToken);
+
+  attachCookiesToResponse({ res, user: tokenUser, refreshToken });
 
   res.status(StatusCodes.OK).json({ user: tokenUser });
 };
